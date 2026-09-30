@@ -61,15 +61,20 @@ source <ESP-IDF-v5.5.3 路径>/export.sh
 ## 修改学习内容
 
 所有内容的唯一来源是 [`tools/jp_learner/jp_content.py`](tools/jp_learner/jp_content.py)（假名表、单词表、
-TTS 音色与语速）；界面文字集中在 [`main/jp_text.h`](main/jp_text.h)。修改后按顺序重新生成：
+TTS 引擎、音色、语速与单片段纠错表）；界面文字集中在 [`main/jp_text.h`](main/jp_text.h)。修改后按顺序重新生成：
 
 ```bash
 python3 tools/jp_learner/gen_data.py                   # → main/jp_data_gen.c / .h
 python3 tools/jp_learner/gen_fonts.py \
     --font-sc /path/to/SourceHanSansSC-Regular.otf \
     --font-jp /path/to/NotoSansCJKjp-Regular.otf       # → assets/fonts/jp_font_*.c（需要 Pillow、fontTools）
-python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg  # → assets/music/jp_voice_pack.bin（需要 edge-tts、联网）
+python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg  # → assets/music/jp_voice_pack.bin（需要已登录的 bl CLI、联网）
 ```
+
+语音包默认用阿里云百炼 CosyVoice 合成：先 `npm install -g bailian-cli` 安装 CLI，再 `bl auth login --console`
+登录一次；密钥由 `bl` 保管，脚本不读取。把 `jp_content.py` 里的 `VOICE_ENGINE` 改为 `"edge"` 可切回
+Edge TTS（需 `python3 -m pip install edge-tts`）。改动引擎、音色、语速或纠错表都会改变语音哈希，因此也要
+重新运行 `gen_data.py`。
 
 静态门禁会检查：生成的数据表与内容源一致、字库覆盖全部文案与内容（`tests/test_jp_font_coverage.py`）、
 语音包哈希与内容一致且每段都能解码（`tests/test_jp_content.py`、`tests/test_jp_adpcm.c`）。
@@ -91,8 +96,8 @@ python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg  # → assets/m
 
 ## 资源占用
 
-以 2026-09-30 的构建为准：应用镜像约 2.57 MB（factory 分区 8 MB），其中字库位图约 0.63 MB、语音包
-1.14 MB（257 段，共 145.5 秒）；静态 DRAM 占用约 39%。LVGL 内存池由基线的 24 KB 调到 40 KB——主机
+以 2026-09-30 的构建为准：应用镜像约 2.59 MB（factory 分区 8 MB），其中字库位图约 0.63 MB、语音包
+1.16 MB（257 段，共 147.7 秒）；静态 DRAM 占用约 39%。LVGL 内存池由基线的 24 KB 调到 40 KB——主机
 离屏渲染实测单个页面峰值约 19 KB，切页时先删旧页再建新页，400 轮切页压力测试后最小连续空闲块仍有
 约 16 KB。启动日志会打印真机上的堆与 LVGL 池占用。
 
@@ -100,8 +105,8 @@ python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg  # → assets/m
 
 - 字库：思源黑体 SC / Noto Sans CJK JP，SIL Open Font License 1.1，只提交生成的位图子集，详见
   [素材说明](assets/README.zh_CN.md)。
-- 发音：微软 Edge TTS（`ja-JP-NanamiNeural`）离线预生成。**该音频的再分发条款未经确认，建议仅用于
-  个人学习；公开发布固件或把语音包推送到公开仓库前请自行确认。** 缺少语音包时固件仍可构建，自动以
+- 发音：阿里云百炼 CosyVoice（`cosyvoice-v3-flash`，音色 `loongtomoka_v3`）离线预生成。**公开发布固件
+  或把语音包推送到公开仓库前，请自行确认百炼对生成音频的使用条款。** 缺少语音包时固件仍可构建，自动以
   静音模式运行。
 
 ## 当前状态

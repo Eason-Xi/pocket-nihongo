@@ -66,16 +66,21 @@ resets NVS, which clears learning progress; use the segmented `idf.py flash` to 
 ## Changing the content
 
 [`tools/jp_learner/jp_content.py`](tools/jp_learner/jp_content.py) is the single source of the kana table,
-word list, TTS voice, and speaking rate; interface strings live in [`main/jp_text.h`](main/jp_text.h).
-Regenerate in this order after editing:
+word list, TTS engine, voice, speaking rate, and per-clip pronunciation fixes; interface strings live in
+[`main/jp_text.h`](main/jp_text.h). Regenerate in this order after editing:
 
 ```bash
 python3 tools/jp_learner/gen_data.py                   # -> main/jp_data_gen.c / .h
 python3 tools/jp_learner/gen_fonts.py \
     --font-sc /path/to/SourceHanSansSC-Regular.otf \
     --font-jp /path/to/NotoSansCJKjp-Regular.otf       # -> assets/fonts/jp_font_*.c (needs Pillow and fontTools)
-python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg  # -> assets/music/jp_voice_pack.bin (needs edge-tts and network)
+python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg  # -> assets/music/jp_voice_pack.bin (needs the logged-in bl CLI and network)
 ```
+
+The voice pack uses Aliyun Bailian CosyVoice by default. Install the CLI with `npm install -g bailian-cli`
+and log in once with `bl auth login --console`; `bl` keeps the API key and the script never reads it. Set
+`VOICE_ENGINE = "edge"` in `jp_content.py` to switch back to Edge TTS (`python3 -m pip install edge-tts`).
+Every engine, voice, rate, or fix-table change alters the voice hash, so rerun `gen_data.py` as well.
 
 The static gate checks that the generated tables match the content source, that the fonts cover every
 string and content item (`tests/test_jp_font_coverage.py`), and that the voice pack hash matches the content
@@ -98,8 +103,8 @@ references and remain covered by host tests, but they are not compiled into this
 
 ## Resource budget
 
-From the 2026-09-30 build: the application image is about 2.57 MB (8 MB factory partition), including about
-0.63 MB of font bitmaps and a 1.14 MB voice pack (257 clips, 145.5 s). Static DRAM use is about 39%. The LVGL
+From the 2026-09-30 build: the application image is about 2.59 MB (8 MB factory partition), including about
+0.63 MB of font bitmaps and a 1.16 MB voice pack (257 clips, 147.7 s). Static DRAM use is about 39%. The LVGL
 pool was raised from the baseline 24 KB to 40 KB: off-screen rendering on the host measured a peak of about
 19 KB per screen, screens are deleted before the next one is built, and after a 400-round navigation stress
 test the smallest contiguous free block was still about 16 KB. The boot log prints the on-device heap and
@@ -109,9 +114,9 @@ LVGL pool usage.
 
 - Fonts: Source Han Sans SC and Noto Sans CJK JP, SIL Open Font License 1.1. Only the generated bitmap
   subsets are committed; see the [assets guide](assets/README.md).
-- Voice: pre-generated with Microsoft Edge TTS (`ja-JP-NanamiNeural`). **The redistribution terms for this
-  audio have not been confirmed; use it for personal study and check the terms yourself before publishing
-  firmware or pushing the voice pack to a public repository.** The firmware still builds without the voice
+- Voice: pre-generated with Aliyun Bailian CosyVoice (`cosyvoice-v3-flash`, voice `loongtomoka_v3`).
+  **Check the Bailian terms for generated audio yourself before publishing firmware or pushing the voice pack
+  to a public repository.** The firmware still builds without the voice
   pack and then runs silently.
 
 ## Status

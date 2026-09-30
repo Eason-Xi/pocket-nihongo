@@ -51,6 +51,6 @@
 
 | 文件 | 格式 | 用途与来源 |
 | --- | --- | --- |
-| `music/jp_voice_pack.bin` | 16 kHz 单声道 IMA-ADPCM（4 bit），257 段，共 145.5 秒，约 1.14 MB | 口袋日语全部假名与 N5 单词的发音，嵌入应用镜像。由 `tools/jp_learner/build_voice.py` 调用微软 Edge TTS（`ja-JP-NanamiNeural`，假名语速 -30%、单词 -10%）生成，经去静音与峰值归一化；包格式见该脚本说明。 |
+| `music/jp_voice_pack.bin` | 16 kHz 单声道 IMA-ADPCM（4 bit），257 段，共 147.7 秒，约 1.16 MB | 口袋日语全部假名与 N5 单词的发音，嵌入应用镜像。由 `tools/jp_learner/build_voice.py` 调用阿里云百炼 CosyVoice（`cosyvoice-v3-flash`，音色 `loongtomoka_v3`，假名语速 0.75 倍、单词 0.9 倍，固定随机种子，单片段纠错见 `jp_content.py`）生成，经去静音与峰值归一化；包格式见该脚本说明。 |
 
-Edge TTS 音频的再分发条款尚未确认。`jp_voice_pack.bin` 仅建议用于个人学习；公开发布固件或把该文件推送到公开仓库前请自行确认条款。文件缺失时固件仍可构建并以静音模式运行，语音包相关检查会自动跳过。
+公开发布固件或把 `jp_voice_pack.bin` 推送到公开仓库前，请自行确认阿里云百炼对生成音频的使用条款。文件缺失时固件仍可构建并以静音模式运行，语音包相关检查会自动跳过。

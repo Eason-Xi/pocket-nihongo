@@ -415,16 +415,51 @@ def build_words() -> list[Word]:
 # 语音片段清单
 # ---------------------------------------------------------------------------
 
-# Edge TTS 合成参数。改动任何一项都会改变语音包内容哈希，固件据此拒绝不匹配的旧包。
-VOICE_NAME = "ja-JP-NanamiNeural"
-# 单个假名按正常语速只有约 0.15 s 有声部分，初学者跟读太急，因此假名放慢到 -30%；
-# 单词本身有多个音节，-10% 即清晰自然。
-VOICE_RATE_KANA = "-30%"
-VOICE_RATE_WORD = "-10%"
+@dataclass(frozen=True)
+class VoiceProfile:
+    """一套 TTS 合成参数。语速写法随引擎不同：Edge 用百分比，百炼用倍数。"""
+
+    engine: str            # "bailian" | "edge"，决定 build_voice.py 调用哪个后端
+    model: str             # 百炼模型 ID；Edge 固定为 "edge-tts"
+    voice: str
+    rate_kana: str         # 单个假名：正常语速有声部分只有约 0.15 s，初学者跟读太急，需放慢
+    rate_word: str         # 单词本身有多个音节，略慢即清晰自然
+    seed: int = 0          # 百炼的随机种子，固定后同一文本每次合成结果一致；Edge 忽略
+    # 单片段纠错：片段文本 → 实际送给 TTS 的文本。用于单独念会跑偏的假名等。
+    overrides: tuple[tuple[str, str], ...] = ()
+    # 单片段种子：片段文本 → 种子。某个种子下发音含糊时，换一个种子重新采样。
+    seed_overrides: tuple[tuple[str, int], ...] = ()
+
+
+VOICE_PROFILES = {
+    # 阿里云百炼 CosyVoice（需 `bl` CLI 并已登录）。
+    "bailian": VoiceProfile(
+        engine="bailian", model="cosyvoice-v3-flash", voice="loongtomoka_v3",
+        rate_kana="0.75", rate_word="0.9", seed=1,
+        # 单独的「ん」容易读成上扬的语气词「うん？」；加引号后读作平调的鼻音。
+        overrides=(("ん", "「ん」"),),
+        # 种子 1 下这几个词在 ASR 回检中稳定听成别的词（わは / かしん / でんき），
+        # 种子 2 下识别正确。
+        seed_overrides=(("はは", 2), ("しゃしん", 2), ("てんき", 2)),
+    ),
+    # 微软 Edge TTS（非官方接口，音频再分发条款未确认），保留作备选。
+    "edge": VoiceProfile(
+        engine="edge", model="edge-tts", voice="ja-JP-NanamiNeural",
+        rate_kana="-30%", rate_word="-10%",
+    ),
+}
+
+# 当前使用的合成参数。改动这里或 VOICE_PROFILES 中的任何一项都会改变语音包内容哈希，
+# 固件据此拒绝不匹配的旧包；改完需重新运行 gen_data.py 与 build_voice.py。
+VOICE_ENGINE = "bailian"
+
+
+def voice_profile() -> VoiceProfile:
+    return VOICE_PROFILES[VOICE_ENGINE]
 
 
 def voice_clips() -> list[str]:
-    """按片段编号返回要合成的文本。
+    """按片段编号返回片段文本（即界面上显示的假名/读音）。
 
     编号 0..103 为假名（平/片假名共用），其后依次为单词读音。
     固件里 ``jp_kana_t.voice`` / ``jp_word_t.voice`` 存的就是这里的下标。
@@ -432,9 +467,22 @@ def voice_clips() -> list[str]:
     return [kana.hira for kana in build_kana()] + [word.reading for word in build_words()]
 
 
+def voice_text(clip_id: int) -> str:
+    """第 clip_id 个片段实际送给 TTS 的文本（应用单片段纠错表）。"""
+    text = voice_clips()[clip_id]
+    return dict(voice_profile().overrides).get(text, text)
+
+
+def voice_seed(clip_id: int) -> int:
+    """第 clip_id 个片段使用的随机种子（应用单片段种子表）。"""
+    profile = voice_profile()
+    return dict(profile.seed_overrides).get(voice_clips()[clip_id], profile.seed)
+
+
 def voice_rate(clip_id: int) -> str:
     """第 clip_id 个片段使用的语速：假名片段慢速，单词片段常速。"""
-    return VOICE_RATE_KANA if clip_id < len(build_kana()) else VOICE_RATE_WORD
+    profile = voice_profile()
+    return profile.rate_kana if clip_id < len(build_kana()) else profile.rate_word
 
 
 def fnv1a32(data: bytes) -> int:
@@ -447,8 +495,9 @@ def fnv1a32(data: bytes) -> int:
 
 
 def voice_hash() -> int:
-    """语音包内容哈希：片段文本 + 音色 + 语速。写进语音包头与生成的 C 头文件。"""
-    payload = "\n".join([VOICE_NAME, VOICE_RATE_KANA, VOICE_RATE_WORD, *voice_clips()])
+    """语音包内容哈希：合成参数 + 片段文本。写进语音包头与生成的 C 头文件。"""
+    profile = voice_profile()
+    payload = "\n".join([repr(profile), *voice_clips()])
     return fnv1a32(payload.encode("utf-8"))
 
 

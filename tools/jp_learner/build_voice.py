@@ -2,16 +2,24 @@
 # -*- coding: utf-8 -*-
 """合成口袋日语的全部发音，并打包成固件内嵌的 IMA-ADPCM 语音包。
 
-用法（在仓库根目录执行；edge-tts 需装在当前 Python 环境中）::
+用法（在仓库根目录执行）::
 
-    python3 -m pip install edge-tts
     python3 tools/jp_learner/build_voice.py --ffmpeg /path/to/ffmpeg
+
+合成引擎由 ``jp_content.VOICE_ENGINE`` 决定（参数集中在 ``jp_content.VOICE_PROFILES``）：
+
+* ``bailian``（默认）：阿里云百炼 CosyVoice。需要安装百炼 CLI 并登录一次
+  （``npm install -g bailian-cli``、``bl auth login --console``）；密钥由 ``bl``
+  自行保管，本脚本不读取也不传递。
+* ``edge``：微软 Edge TTS，需 ``python3 -m pip install edge-tts``。
 
 流程：
 
-1. 读取 ``jp_content.voice_clips()``，逐条用 Edge TTS（``VOICE_NAME``，语速取
-   ``jp_content.voice_rate()``：假名慢速、单词常速）合成 MP3，缓存到 ``build/jp_voice_cache/``（已被 Git 忽略；缓存键包含文本、音色、
-   语速，改参数会自动重新合成）。
+1. 读取 ``jp_content.voice_clips()``，逐条合成（文本取 ``jp_content.voice_text()``，
+   已应用单片段纠错表；语速取 ``jp_content.voice_rate()``：假名慢速、单词常速；
+   种子取 ``jp_content.voice_seed()``），
+   缓存到 ``build/jp_voice_cache/``（已被 Git 忽略；缓存键包含引擎、模型、音色、
+   语速、种子与文本，改参数会自动重新合成）。
 2. ffmpeg 解码为 16 kHz / 16 bit / 单声道 PCM（与 BSP 默认音频格式一致）。
 3. 去掉首尾静音、保留少量前后留白并做淡入淡出，峰值归一化到 -1.5 dBFS。
 4. IMA-ADPCM 4 bit 编码（每个片段从 predictor=0、step_index=0 开始，
@@ -29,8 +37,8 @@
     偏移 16  clip_count × { u32 data_offset（相对包首）, u32 sample_count }
     之后     各片段 ADPCM 数据，每字节 2 个采样，低半字节在前
 
-发音版权：Edge TTS 生成的音频仅建议用于个人学习；公开分发固件前请自行确认
-微软相关服务条款。
+发音版权：公开分发固件前，请自行确认所用 TTS 服务（阿里云百炼或微软 Edge）
+对生成音频的使用与再分发条款。
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ import argparse
 import array
 import asyncio
 import hashlib
+import os
 import shutil
 import struct
 import subprocess
@@ -61,7 +70,7 @@ HEADER_SIZE = 16
 ENTRY_SIZE = 8
 
 # 静音判定阈值：|x| 超过满幅的 0.4%（约 -48 dBFS）视为有声；阈值偏低是为了
-# 保住 h/f/s 等轻辅音的起始与元音尾巴，Edge TTS 的底噪远低于这个值。
+# 保住 h/f/s 等轻辅音的起始与元音尾巴，TTS 输出的底噪远低于这个值。
 SILENCE_THRESHOLD = int(32767 * 0.004)
 LEAD_MS = 40      # 有声段前保留的留白
 TAIL_MS = 120     # 有声段后保留的留白（让尾音自然衰减）
@@ -147,32 +156,64 @@ def adpcm_decode(data: bytes, sample_count: int) -> array.array:
 # 合成与后处理
 # ---------------------------------------------------------------------------
 
-def cache_path(cache_dir: Path, text: str, rate: str) -> Path:
-    """缓存文件名 = sha1(音色|语速|文本)，参数一变就是新文件。"""
-    key = f"{jp_content.VOICE_NAME}|{rate}|{text}".encode("utf-8")
-    return cache_dir / f"{hashlib.sha1(key).hexdigest()}.mp3"
+def cache_path(cache_dir: Path, text: str, rate: str, seed: int) -> Path:
+    """缓存文件名 = sha1(合成参数|种子|语速|文本)，参数一变就是新文件。"""
+    profile = jp_content.voice_profile()
+    key = f"{profile.engine}|{profile.model}|{profile.voice}|{seed}|{rate}|{text}"
+    # 百炼直接取无损 WAV（ffmpeg 再重采样）；Edge 只提供 MP3。
+    suffix = ".wav" if profile.engine == "bailian" else ".mp3"
+    return cache_dir / f"{hashlib.sha1(key.encode('utf-8')).hexdigest()}{suffix}"
 
 
-async def _synthesize(text: str, rate: str, out: Path) -> None:
-    import edge_tts  # 延迟导入：只打包缓存时不需要网络和 edge-tts
+def _synthesize_edge(text: str, rate: str, out: Path) -> None:
+    import edge_tts  # 延迟导入：只打包缓存或使用百炼时不需要 edge-tts
 
-    communicate = edge_tts.Communicate(text, jp_content.VOICE_NAME, rate=rate)
-    tmp = out.with_suffix(".part")
-    await communicate.save(str(tmp))
-    if tmp.stat().st_size < 512:
-        raise RuntimeError(f"合成结果过小（{tmp.stat().st_size} B）")
-    tmp.replace(out)
+    communicate = edge_tts.Communicate(text, jp_content.voice_profile().voice, rate=rate)
+    asyncio.run(communicate.save(str(out)))
 
 
-def synthesize_cached(cache_dir: Path, text: str, rate: str, retries: int = 4) -> Path:
-    """确保缓存里有该文本的 MP3；网络偶发失败时指数退避重试。"""
-    path = cache_path(cache_dir, text, rate)
+class _NoAudioError(RuntimeError):
+    """服务端对该「文本 + 种子」组合没有产出音频（下载结果 404），换种子可解决。"""
+
+
+def _synthesize_bailian(bl: str, text: str, rate: str, seed: int, out: Path) -> None:
+    profile = jp_content.voice_profile()
+    result = subprocess.run(
+        [bl, "speech", "synthesize", "--text", text, "--model", profile.model,
+         "--voice", profile.voice, "--language", "ja", "--rate", rate,
+         "--seed", str(seed), "--format", "wav", "--out", str(out)],
+        capture_output=True, text=True, env={**os.environ, "NO_COLOR": "1"})
+    if result.returncode != 0:
+        lines = (result.stderr + result.stdout).strip().splitlines()
+        errors = [line.strip() for line in lines if line.lstrip().startswith("Error")]
+        detail = errors[0] if errors else (lines[-1].strip() if lines else "无输出")
+        if "Download failed: HTTP 404" in detail:
+            raise _NoAudioError(detail)
+        raise RuntimeError(f"bl 退出码 {result.returncode}: {detail}")
+
+
+def synthesize_cached(cache_dir: Path, bl: str, text: str, rate: str, seed: int,
+                      retries: int = 4) -> Path:
+    """确保缓存里有该文本的音频；网络偶发失败时指数退避重试。"""
+    path = cache_path(cache_dir, text, rate, seed)
     if path.exists():
         return path
+    tmp = path.with_name(path.name + ".part")
+    # 个别「文本 + 种子」组合在百炼上稳定地不出音频（如「が」+ 种子 1），此时依次换用
+    # 下一个种子；换法固定，重新生成的结果依然一致。其他错误按原种子重试。
     for attempt in range(retries):
         try:
-            asyncio.run(_synthesize(text, rate, path))
+            if jp_content.voice_profile().engine == "bailian":
+                _synthesize_bailian(bl, text, rate, seed, tmp)
+            else:
+                _synthesize_edge(text, rate, tmp)
+            if tmp.stat().st_size < 512:
+                raise RuntimeError(f"合成结果过小（{tmp.stat().st_size} B）")
+            tmp.replace(path)
             return path
+        except _NoAudioError:
+            print(f"  种子 {seed} 未产出音频，改用种子 {seed + 1}", file=sys.stderr)
+            seed += 1
         except Exception as error:  # noqa: BLE001 —— 网络/服务端错误统一重试
             wait = 1.5 * (2 ** attempt)
             print(f"  合成失败（第 {attempt + 1} 次）: {error}；{wait:.1f}s 后重试", file=sys.stderr)
@@ -180,10 +221,10 @@ def synthesize_cached(cache_dir: Path, text: str, rate: str, retries: int = 4) -
     raise RuntimeError(f"多次重试后仍无法合成: {text!r}")
 
 
-def decode_pcm(ffmpeg: str, mp3: Path) -> array.array:
+def decode_pcm(ffmpeg: str, source: Path) -> array.array:
     """ffmpeg 解码为 16 kHz 单声道 s16le，并滤掉 60 Hz 以下的低频（小喇叭放不出来）。"""
     result = subprocess.run(
-        [ffmpeg, "-v", "error", "-i", str(mp3), "-af", "highpass=f=60",
+        [ffmpeg, "-v", "error", "-i", str(source), "-af", "highpass=f=60",
          "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"],
         check=True, capture_output=True)
     pcm = array.array("h")
@@ -241,6 +282,7 @@ def build_pack(clips: list[tuple[int, bytes]]) -> bytes:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
+    parser.add_argument("--bl", default=shutil.which("bl") or "bl", help="百炼 CLI 路径（引擎为 bailian 时使用）")
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--preview", type=Path,
@@ -252,8 +294,9 @@ def main() -> int:
     packed: list[tuple[int, bytes]] = []
     total_samples = 0
     for clip_id, text in enumerate(texts):
-        mp3 = synthesize_cached(args.cache, text, jp_content.voice_rate(clip_id))
-        pcm = trim_and_normalize(decode_pcm(args.ffmpeg, mp3))
+        audio = synthesize_cached(args.cache, args.bl, jp_content.voice_text(clip_id),
+                                  jp_content.voice_rate(clip_id), jp_content.voice_seed(clip_id))
+        pcm = trim_and_normalize(decode_pcm(args.ffmpeg, audio))
         adpcm = adpcm_encode(pcm)
         packed.append((len(pcm), adpcm))
         total_samples += len(pcm)

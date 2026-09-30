@@ -9,6 +9,6 @@
 // 学习进度总卡片数：平假名 + 片假名 + 单词，NVS 中每张卡 1 字节。
 #define JP_CARD_TOTAL          (JP_KANA_COUNT * 2 + JP_WORD_COUNT)
 // 语音包内容哈希（文本+音色+语速），固件用它拒绝与数据不匹配的语音包。
-#define JP_VOICE_HASH          0xA1B5A4A8u
+#define JP_VOICE_HASH          0x845D01D6u
 // 卡片布局哈希，卡片顺序或数量变化时 NVS 中的旧进度自动作废。
 #define JP_CONTENT_HASH        0x9F18A61Bu

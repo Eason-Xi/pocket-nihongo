@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import array
+import dataclasses
 import math
 import re
 import struct
@@ -97,12 +98,42 @@ class VoicePackTest(unittest.TestCase):
 
     def test_hash_depends_on_voice_settings(self) -> None:
         original = jp_content.voice_hash()
-        saved = jp_content.VOICE_RATE_KANA
+        saved_engine = jp_content.VOICE_ENGINE
+        saved_profile = jp_content.VOICE_PROFILES[saved_engine]
         try:
-            jp_content.VOICE_RATE_KANA = "+0%"
+            for engine in jp_content.VOICE_PROFILES:
+                if engine != saved_engine:
+                    jp_content.VOICE_ENGINE = engine
+                    self.assertNotEqual(jp_content.voice_hash(), original, engine)
+            jp_content.VOICE_ENGINE = saved_engine
+            jp_content.VOICE_PROFILES[saved_engine] = dataclasses.replace(saved_profile, rate_kana="1.0")
             self.assertNotEqual(jp_content.voice_hash(), original)
+            jp_content.VOICE_PROFILES[saved_engine] = dataclasses.replace(saved_profile, overrides=())
+            self.assertEqual(jp_content.voice_hash() == original, not saved_profile.overrides)
         finally:
-            jp_content.VOICE_RATE_KANA = saved
+            jp_content.VOICE_ENGINE = saved_engine
+            jp_content.VOICE_PROFILES[saved_engine] = saved_profile
+
+    def test_voice_overrides(self) -> None:
+        clips = jp_content.voice_clips()
+        for profile in jp_content.VOICE_PROFILES.values():
+            self.assertIn(profile.engine, ("bailian", "edge"))
+            sources = [source for source, _ in profile.overrides]
+            self.assertEqual(len(set(sources)), len(sources), "纠错表中的片段重复")
+            for source, text in profile.overrides:
+                self.assertIn(source, clips, "纠错表引用了不存在的片段")
+                self.assertTrue(text and text != source)
+            seed_sources = [source for source, _ in profile.seed_overrides]
+            self.assertEqual(len(set(seed_sources)), len(seed_sources), "种子表中的片段重复")
+            for source, seed in profile.seed_overrides:
+                self.assertIn(source, clips, "种子表引用了不存在的片段")
+                self.assertNotEqual(seed, profile.seed)
+        overrides = dict(jp_content.voice_profile().overrides)
+        for clip_id, text in enumerate(clips):
+            self.assertEqual(jp_content.voice_text(clip_id), overrides.get(text, text))
+        seeds = dict(jp_content.voice_profile().seed_overrides)
+        for clip_id, text in enumerate(clips):
+            self.assertEqual(jp_content.voice_seed(clip_id), seeds.get(text, jp_content.voice_profile().seed))
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ idf_component_register(
 
 # 语音包（IMA-ADPCM，约 1.1 MB）以只读数据嵌入 app 分区，
 # 符号 _binary_jp_voice_pack_bin_start/_end，见 jp_voice.c。
-# 语音包由 tools/jp_learner/build_voice.py 生成；Edge TTS 音频的再分发条款需使用者自行确认，
+# 语音包由 tools/jp_learner/build_voice.py 生成；TTS 音频的再分发条款需使用者自行确认，
 # 因此允许不提交该文件：缺失时嵌入一个无效占位包，固件启动后自动进入静音模式。
 set(JP_VOICE_PACK "${CMAKE_CURRENT_LIST_DIR}/../assets/music/jp_voice_pack.bin")
 if(NOT EXISTS "${JP_VOICE_PACK}")
